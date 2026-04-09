@@ -1,0 +1,86 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ShopFast — CI Quality Gate
+# Norma: IEEE 730-2014 §4.4.2 (Software Product Evaluation)
+#
+# REGRA QG-01: Bloqueia merge se cobertura de testes em domínios de pagamento
+#              for inferior a 90% (JaCoCo threshold).
+# REGRA QG-02: Bloqueia merge se lógica de UI estiver acoplada ao domínio
+#              de pagamento (ArchUnit).
+#
+# Este workflow é referenciado pela Branch Protection Rule do GitHub:
+# "Require status checks to pass before merging" → jobs: [quality-gate]
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI Quality Gate — ShopFast SQA
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - '.github/workflows/ci-quality-gate.yml'
+
+jobs:
+  quality-gate:
+    name: 🔒 Quality Gate (IEEE 730 — QG-01 + QG-02)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # ── REGRA QG-01: Cobertura de Testes ─────────────────────────────────
+      - name: Run Unit Tests + Coverage (JaCoCo)
+        run: mvn test jacoco:report --no-transfer-progress
+
+      - name: Enforce Coverage Threshold — Payment Domain
+        run: |
+          mvn jacoco:check \
+            -Djacoco.haltOnFailure=true \
+            -Djacoco.includes=com/shopfast/coupon/*,com/shopfast/payment/*,com/shopfast/checkout/* \
+            -Djacoco.minimum.line=0.90 \
+            --no-transfer-progress
+        # Se cobertura < 90% nos domínios críticos → exit 1 → merge BLOQUEADO
+
+      # ── REGRA QG-02: ArchUnit — Sem UI no domínio de Pagamento ───────────
+      - name: Enforce Architecture Rules (ArchUnit)
+        run: mvn test -Dtest=ArchitectureRulesTest --no-transfer-progress
+        # ArchUnit verifica: nenhuma classe em ..payment.. ou ..coupon..
+        # pode depender de ..view.. ou ..ui..
+
+      # ── Análise Estática (Checkstyle + PMD) ──────────────────────────────
+      - name: Static Analysis — Checkstyle
+        run: mvn checkstyle:check --no-transfer-progress
+
+      - name: Static Analysis — PMD
+        run: mvn pmd:check --no-transfer-progress
+
+      # ── Publicar Relatório de Cobertura ───────────────────────────────────
+      - name: Upload Coverage Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+          retention-days: 30
+
+      - name: Quality Gate Summary
+        if: always()
+        run: |
+          echo "## 🔒 Quality Gate Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Regra | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| QG-01: Cobertura ≥ 90% em domínios de pagamento | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| QG-02: Ausência de acoplamento UI↔Payment | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Norma: IEEE 730-2014 §4.4.2 | ShopFast SQA v2.1.0" >> $GITHUB_STEP_SUMMARY
